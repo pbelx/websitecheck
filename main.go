@@ -18,6 +18,9 @@ func main() {
 	timeoutFlag := flag.Int("timeout", 10, "HTTP request timeout in seconds")
 	verboseFlag := flag.Bool("verbose", false, "Enable verbose logging")
 	retriesFlag := flag.Int("retries", 3, "Number of retries before considering site down")
+	maxBackoffFlag := flag.Int("max-backoff", 3600, "Maximum backoff time in seconds")
+	initialBackoffFlag := flag.Int("initial-backoff", 60, "Initial backoff time in seconds")
+	backoffFactorFlag := flag.Float64("backoff-factor", 2.0, "Backoff multiplication factor")
 	
 	flag.Parse()
 	
@@ -44,11 +47,16 @@ func main() {
 	log.Printf("Starting website monitor for %s", *urlFlag)
 	log.Printf("Will execute %s when website is down", *elfPathFlag)
 	log.Printf("Checking every %d seconds", *intervalFlag)
+	log.Printf("Using backoff: initial=%ds, factor=%.1f, max=%ds", *initialBackoffFlag, *backoffFactorFlag, *maxBackoffFlag)
 	
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: time.Duration(*timeoutFlag) * time.Second,
 	}
+	
+	// Initialize backoff state
+	consecutiveFailures := 0
+	currentBackoff := *initialBackoffFlag
 	
 	// Main monitoring loop
 	for {
@@ -57,11 +65,34 @@ func main() {
 		if siteDown {
 			log.Printf("Website %s is DOWN! Executing ELF binary...", *urlFlag)
 			executeELF(*elfPathFlag)
-		} else if *verboseFlag {
-			log.Printf("Website %s is UP", *urlFlag)
+			
+			// Increment failure counter and calculate new backoff
+			consecutiveFailures++
+			if consecutiveFailures > 1 {
+				// Apply backoff factor
+				newBackoff := int(float64(currentBackoff) * *backoffFactorFlag)
+				
+				// Cap at maximum backoff
+				if newBackoff > *maxBackoffFlag {
+					currentBackoff = *maxBackoffFlag
+				} else {
+					currentBackoff = newBackoff
+				}
+				
+				log.Printf("Consecutive failures: %d. Next check in %d seconds", consecutiveFailures, currentBackoff)
+				time.Sleep(time.Duration(currentBackoff) * time.Second)
+				continue
+			}
+		} else {
+			if *verboseFlag {
+				log.Printf("Website %s is UP", *urlFlag)
+			}
+			// Reset backoff when site comes back up
+			consecutiveFailures = 0
+			currentBackoff = *initialBackoffFlag
 		}
 		
-		// Wait for the specified interval
+		// Wait for the normal check interval
 		time.Sleep(time.Duration(*intervalFlag) * time.Second)
 	}
 }
